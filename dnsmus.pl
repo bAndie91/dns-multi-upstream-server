@@ -9,11 +9,14 @@ $, = "\t";
 $\ = "\n";
 $timeout = 2;
 
-($ListenPort, @Resolvers) = @ARGV;
+($ListenPort,) = @ARGV;
 
 sub getresolvers
 {
-	return @Resolvers;
+	my $r = new Net::DNS::Resolver(config_file => "/etc/resolv.conf.dnsmus");
+	my @nameservers = @{$r->{'nameservers'}};
+	undef $r;
+	return @nameservers;
 }
 
 sub serialize
@@ -29,7 +32,7 @@ my @upstream;
 
 for my $resolver_addr (getresolvers)
 {
-	my $res = Net::DNS::Resolver->new;
+	my $res = new Net::DNS::Resolver;
 	$res->udp_timeout($timeout);
 	$res->tcp_timeout($timeout);
 	$res->retry(0);
