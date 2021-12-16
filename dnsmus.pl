@@ -5,7 +5,7 @@ use Net::DNS::RR;
 use Data::Dumper;
 use IO::Socket::INET;
 
-$, = "\t";
+$, = "    ";
 $\ = "\n";
 $timeout = 2;
 
@@ -63,6 +63,8 @@ while(1)
 		$upstream->{'started'} = time;
 	}
 	
+	my $preferred_upstream = \$upstream[0];
+	
 	RESPONSE:
 	while(1)
 	{
@@ -83,7 +85,7 @@ while(1)
 				my $header = $response->{'header'};
 				
 				#warn Dumper $response->answer;
-				print STDERR "<<< $response->{'answerfrom'}", serialize $header;
+				print STDERR "+++ $response->{'answerfrom'}", serialize $header;
 				print STDERR "", serialize $_ for $response->answer;
 				
 				close $upstream->{'query'};
@@ -93,6 +95,7 @@ while(1)
 				   and $header->{'ancount'} > 0
 				  )
 				{
+					$preferred_upstream = \$upstream;
 					last RESPONSE;
 				}
 			}
@@ -115,12 +118,14 @@ while(1)
 	
 	my $replied = 0;
 	
-	for $upstream (@upstream)
+	for $upstream ($$preferred_upstream, @upstream)
 	{
 		my $response_packet = $upstream->{'lastresponse'};
 		if(defined $response_packet)
 		{
-			my $rr = Net::DNS::RR->new("upstream-resolver-address. 0 CH TXT \"$upstream->{'res'}->{'nameservers'}->[0]\"");
+			my $resolver_addr = $upstream->{'res'}->{'nameservers'}->[0];
+			print STDERR "<<< $resolver_addr ...";
+			my $rr = Net::DNS::RR->new("upstream-resolver-address. 0 CH TXT \"$resolver_addr\"");
 			$response_packet->push(additional => $rr);
 			#$response_packet->print;
 			$socket->send($response_packet->data);
