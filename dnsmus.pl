@@ -52,7 +52,12 @@ while(1)
 	my $peer_address = $socket->peerhost();
 	my $peer_port = $socket->peerport();
 	
-	my $incoming_packet = new Net::DNS::Packet(\$incoming_packet_data) or die $!;
+	my $incoming_packet = new Net::DNS::Packet(\$incoming_packet_data);
+	if(not $incoming_packet)
+	{
+		warn "invalid DNS packet: $!\n";
+		next;
+	}
 	print STDERR ">>> $peer_address:$peer_port", serialize $incoming_packet->{'header'};
 	print STDERR "", serialize $_ for @{$incoming_packet->{'question'}};
 	#warn Dumper $incoming_packet;
