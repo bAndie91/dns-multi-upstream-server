@@ -11,7 +11,7 @@ use Socket qw(pack_sockaddr_in);
 
 $, = "    ";
 $\ = "\n";
-$timeout = 2;
+$timeout = 3;
 
 ($ListenPort,) = @ARGV;
 
@@ -90,8 +90,9 @@ sub request_handler
 				close $forward->{'query'};
 				
 				if($header->{'rcode'} eq 'NOERROR'
-				   and $header->{'ancount'} > 0
-				  )
+				   and ($header->{'ancount'} > 0
+				     or $header->{'nscount'} > 0
+				  ))
 				{
 					$preferred = \$forward;
 					last RESPONSE;
@@ -180,7 +181,7 @@ while(1)
 	$socket->recv($incoming_packet_data, 1024);
 	my $peer_address = $socket->peerhost();
 	my $peer_port = $socket->peerport();
-	threads->create(\&request_handler, $socket, $peer_address, $peer_port, $incoming_packet_data, \@upstream);
+	threads->create(\&request_handler, $socket, $peer_address, $peer_port, $incoming_packet_data, \@upstream)->detach;
 }
 
 close $socket;
