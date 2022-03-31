@@ -11,24 +11,55 @@ use Socket qw(pack_sockaddr_in);
 
 $, = "    ";
 $\ = "\n";
-$timeout = 3;
+my $timeout = 3;
 
-($ListenPort,) = @ARGV;
+my ($ListenPort,) = @ARGV;
 
 sub getresolvers
 {
+	if(exists $ENV{'NAMESERVERS'}) { return split /:/, $ENV{'NAMESERVERS'}; }
 	my $r = new Net::DNS::Resolver(config_file => "/etc/resolv.conf.dnsmus");
-	my @nameservers = @{$r->{'nameservers'}};
+	my @nameservers = @{$r->{'nameservers'}} || @{$r->{'nameserver4'}};
 	undef $r;
 	return @nameservers;
 }
 
+sub to_label
+{
+	my $r = shift;
+	if(ref $r eq 'Net::DNS::DomainName1035')
+	{
+		return join '.', @{$r->{'label'}};
+	}
+	return $r;
+}
+
+sub rcode   { ref $_[0] eq 'HASH' ? $_[0]->{'rcode'}   : $_[0]->rcode; }
+sub nscount { ref $_[0] eq 'HASH' ? $_[0]->{'nscount'} : $_[0]->nscount; }
+sub ancount { ref $_[0] eq 'HASH' ? $_[0]->{'ancount'} : $_[0]->ancount; }
+
 sub serialize
 {
 	my $oref = shift;
-	my %hash = %$oref;
-	delete $hash{'rdata'};
-	return join " ", map {"$_=".$hash{$_}} sort keys %hash;
+	my %hash;
+	if(ref $oref eq 'Net::DNS::Header')
+	{
+		for my $attr (qw/id qr aa tc rd opcode ra z ad cd rcode qdcount ancount nscount arcount do/)
+		{
+			$hash{$attr} = $oref->$attr;
+		}
+	}
+	else
+	{
+		%hash = %$oref;
+		delete $hash{'rdata'};
+		delete $hash{'owner'};
+		if(exists $hash{'address'})
+		{
+		$hash{'address'} = inet_ntoa($hash{'address'});
+		}
+	}
+	return join " ", map {"$_=".to_label($hash{$_})} sort keys %hash;
 }
 
 sub request_handler
@@ -37,8 +68,19 @@ sub request_handler
 	my $peer_address = shift;
 	my $peer_port = shift;
 	my $incoming_packet_data = shift;
-	my $upstream_ref = shift;
-	my @upstream = @$upstream_ref;
+	
+	my @upstream;
+	for my $resolver_addr (getresolvers)
+	{
+		my $res = new Net::DNS::Resolver;
+		$res->udp_timeout($timeout);
+		$res->tcp_timeout($timeout);
+		$res->retry(0);
+		$res->retrans(0);
+		$res->dnsrch(0);
+		$res->nameservers($resolver_addr);
+		push @upstream, {'res' => $res, };
+	}
 	
 	my $incoming_packet = new Net::DNS::Packet(\$incoming_packet_data);
 	if(not $incoming_packet)
@@ -81,17 +123,18 @@ sub request_handler
 				my $response = $res->bgread($query_handle);
 				#$response->print;
 				$forward->{'lastresponse'} = $response;
-				my $header = $response->{'header'};
+				my $header = $response->{'header'} || $response->header;
+				#print Dumper $header->string;
 				
-				#warn Dumper $response->answer;
-				print STDERR "+++ $response->{'answerfrom'}", serialize $header;
+				my $answerfrom = $response->{'answerfrom'} || $res->{'answerfrom'};
+				print STDERR "+++ $answerfrom", serialize $header;
 				print STDERR "", serialize $_ for $response->answer;
 				
 				close $forward->{'query'};
 				
-				if($header->{'rcode'} eq 'NOERROR'
-				   and ($header->{'ancount'} > 0
-				     or $header->{'nscount'} > 0
+				if(rcode($header) eq 'NOERROR'
+				   and (ancount($header) > 0
+				     or nscount($header) > 0
 				  ))
 				{
 					$preferred = \$forward;
@@ -124,7 +167,7 @@ sub request_handler
 		if(defined $response_packet)
 		{
 			my $upstream = $forward->{'upstream'};
-			my $resolver_addr = $upstream->{'res'}->{'nameservers'}->[0];
+			my $resolver_addr = ($upstream->{'res'}->{'nameservers'} || $upstream->{'res'}->{'nameserver4'})->[0];
 			print STDERR "<<< $resolver_addr ...";
 			my $rr = Net::DNS::RR->new("upstream-resolver-address. 0 CH TXT \"$resolver_addr\"");
 			$response_packet->push(additional => $rr);
@@ -138,32 +181,27 @@ sub request_handler
 	if(not $replied)
 	{
 		my $response_packet = new Net::DNS::Packet();
-		$response_packet->{'header'}->{'qr'} = 1;
-		$response_packet->{'header'}->{'ra'} = 1;
-		$response_packet->{'header'}->{'rcode'} = 'SERVERR';
-		$response_packet->{'header'}->{'id'} = $incoming_packet->{'header'}->{'id'};;
+		if(ref $response_packet->{'header'} eq 'HASH')
+		{
+			$response_packet->{'header'}->{'qr'} = 1;
+			$response_packet->{'header'}->{'ra'} = 1;
+			$response_packet->{'header'}->{'rcode'} = 'SERVERR';
+			$response_packet->{'header'}->{'id'} = $incoming_packet->{'header'}->{'id'};
+		}
+		else
+		{
+			$response_packet->header->qr(1);
+			$response_packet->header->ra(1);
+			$response_packet->header->rcode('SERVFAIL');
+			$response_packet->header->id($incoming_packet->header->id);
+		}
 		my $rr = Net::DNS::RR->new("upstream-resolver-error. 0 CH TXT \"none of ".(scalar@upstream)." upstreams responded\"");
 		$response_packet->push(additional => $rr);
 		$response_packet->push(question => $_) for $incoming_packet->question;
 		#$response_packet->print;
+		#warn Dumper $response_packet;
 		$socket->send($response_packet->data, undef, $dest_sock_addr);
 	}
-}
-
-
-my @upstream;
-share @upstream;
-
-for my $resolver_addr (getresolvers)
-{
-	my $res = new Net::DNS::Resolver;
-	$res->udp_timeout($timeout);
-	$res->tcp_timeout($timeout);
-	$res->retry(0);
-	$res->retrans(0);
-	$res->dnsrch(0);
-	$res->nameservers($resolver_addr);
-	push @upstream, shared_clone({'res' => $res, });
 }
 
 
@@ -181,8 +219,7 @@ while(1)
 	$socket->recv($incoming_packet_data, 1024);
 	my $peer_address = $socket->peerhost();
 	my $peer_port = $socket->peerport();
-	threads->create(\&request_handler, $socket, $peer_address, $peer_port, $incoming_packet_data, \@upstream)->detach;
+	threads->create(\&request_handler, $socket, $peer_address, $peer_port, $incoming_packet_data)->detach;
 }
 
 close $socket;
-
