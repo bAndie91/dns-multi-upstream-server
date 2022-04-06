@@ -46,7 +46,7 @@ sub serialize
 	{
 		for my $attr (qw/id qr aa tc rd opcode ra z ad cd rcode qdcount ancount nscount arcount do/)
 		{
-			$hash{$attr} = $oref->$attr;
+			eval { $hash{$attr} = $oref->$attr; 1; }
 		}
 	}
 	else
@@ -54,9 +54,11 @@ sub serialize
 		%hash = %$oref;
 		delete $hash{'rdata'};
 		delete $hash{'owner'};
-		if(exists $hash{'address'})
+		if($hash{'class'} =~ /^\d+$/ and exists $hash{'address'})
 		{
-		$hash{'address'} = inet_ntoa($hash{'address'});
+			# if 'class' attribute is numeric, then other attributes are too (type, address, ...),
+			# otherwise 'address' is already in dotted-decimal format.
+			$hash{'address'} = inet_ntoa($hash{'address'});
 		}
 	}
 	return join " ", map {"$_=".to_label($hash{$_})} sort keys %hash;
